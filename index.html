@@ -9,12 +9,677 @@
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#0b0d14">
 <link rel="icon" href="icon-32.png" sizes="32x32" type="image/png">
+<!-- iOS: apre a schermo intero come un'app vera (no barra Safari) quando
+     avviata dall'icona aggiunta alla Home — richiede Safari: Condividi →
+     Aggiungi a Home -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Arena Duello">
 <link rel="apple-touch-icon" href="icon-180.png">
 
-<style>PLACEHOLDER_STYLE</style>
+<style>
+  :root{
+    --bg:#0b0d14;
+    --panel:#14171f;
+    --panel-edge:#2a2f3d;
+    --hp-player:#5fd0c0;
+    --hp-enemy:#e0546b;
+    --gold:#c9a24b;
+    --text:#e8e6de;
+    --dim:#8b8f9c;
+  }
+  html,body{
+    margin:0; padding:0; width:100%; height:100%;
+    background:var(--bg); color:var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overflow:hidden; overscroll-behavior:none; touch-action:none;
+    -webkit-user-select:none; user-select:none;
+  }
+  #canvas-wrap{ position:fixed; inset:0; }
+  canvas{ display:block; width:100%; height:100%; }
+
+  /* ---------- TOP HUD: barre HP di squadra ---------- */
+  #hud-top{
+    position:fixed; top:0; left:0; right:0;
+    padding: max(10px, env(safe-area-inset-top)) 14px 0 14px;
+    display:flex; justify-content:space-between; align-items:flex-start; gap:14px;
+    pointer-events:none; z-index:20;
+  }
+  .team-col{ display:flex; flex-direction:column; gap:6px; max-width:220px; }
+  .team-col.enemy{ align-items:flex-end; }
+  .hpblock{ width:100%; }
+  .hpblock.self .hpbar-outer{ height:14px; }
+  .hpblock.mate .hpbar-outer, .hpblock.foe .hpbar-outer{ height:8px; }
+  .hpname{
+    font-size:10px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--dim); margin-bottom:3px; font-weight:600;
+  }
+  .hpblock.self .hpname{ font-size:11px; letter-spacing:.14em; }
+  .team-col.enemy .hpname{ text-align:right; }
+  .hpbar-outer{
+    border-radius:6px; background:#1c1f29;
+    border:1px solid var(--panel-edge); overflow:hidden;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,.6);
+  }
+  .hpbar-inner{ height:100%; width:100%; border-radius:6px; transition: width .18s ease-out; }
+  .team-col.player .hpbar-inner{ background: linear-gradient(90deg,#3a9a8c,var(--hp-player)); }
+  .team-col.enemy .hpbar-inner{ background: linear-gradient(90deg,var(--hp-enemy),#a83248); margin-left:auto; }
+  .hpblock.dead{ opacity:0.35; }
+  .hptext{ font-size:10px; color:var(--dim); margin-top:2px; }
+  .team-col.enemy .hptext{ text-align:right; }
+
+  /* ---------- Minimappa ---------- */
+  #minimap{
+    position:fixed; top: max(96px, calc(env(safe-area-inset-top) + 86px)); right:14px;
+    width:110px; height:110px; border-radius:50%;
+    background:rgba(10,12,16,.65); border:1px solid var(--panel-edge);
+    z-index:19; pointer-events:none;
+  }
+
+  /* ---------- Center status text ---------- */
+  #status-text{
+    position:fixed; top: 64px; left:50%; transform:translateX(-50%);
+    font-size:13px; letter-spacing:.08em; color:var(--gold);
+    text-transform:uppercase; font-weight:600; opacity:0; transition:opacity .15s;
+    pointer-events:none; z-index:20; text-shadow:0 1px 4px rgba(0,0,0,.8);
+  }
+
+  /* ---------- Result overlay ---------- */
+  #overlay{
+    position:fixed; inset:0; display:none; align-items:center; justify-content:center;
+    flex-direction:column; background:rgba(6,7,11,.82); z-index:50; text-align:center;
+    backdrop-filter: blur(2px);
+  }
+  #overlay h1{ font-size:34px; margin:0 0 6px 0; letter-spacing:.04em; }
+  #overlay p{ color:var(--dim); margin:0 0 22px 0; font-size:14px; }
+  #overlay-stats{
+    display:grid; grid-template-columns:1fr 1fr; gap:10px 28px;
+    background:rgba(20,18,14,.55); border:1px solid var(--panel-edge); border-radius:10px;
+    padding:16px 20px; margin-bottom:22px; min-width:240px;
+  }
+  .overlay-stat{ display:flex; flex-direction:column; align-items:flex-start; }
+  .overlay-stat-label{ font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
+  .overlay-stat-value{ font-size:17px; font-weight:700; color:var(--gold); margin-top:2px; }
+  #overlay button{
+    pointer-events:auto; font-size:15px; font-weight:600; letter-spacing:.05em;
+    padding:13px 28px; border-radius:10px; border:1px solid var(--gold);
+    background:linear-gradient(180deg,#2a2312,#1a1710); color:var(--gold);
+    text-transform:uppercase;
+  }
+  #overlay button.secondary{
+    margin-top:12px; border-color:var(--panel-edge); color:var(--dim);
+    background:linear-gradient(180deg,#20242f,#171a22);
+  }
+
+  /* ---------- Schermata di preparazione, stile Oblivion: cartelle a
+     sinistra, contenuto al centro, ritratto 3D del personaggio a destra ---------- */
+  #setup-screen{
+    position:fixed; inset:0; z-index:60; display:flex; flex-direction:column;
+    background:radial-gradient(ellipse at 50% 30%, #1c1712 0%, #0a0908 70%);
+    padding: max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right))
+             max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+    gap:12px;
+  }
+  .setup-layout{ flex:1; display:flex; gap:0; min-height:0; border:1px solid #3a2f1c; border-radius:4px; overflow:hidden; box-shadow:0 8px 40px rgba(0,0,0,.6); }
+
+  /* colonna cartelle, come le tab dell'inventario di Oblivion */
+  .setup-nav{
+    width:118px; flex-shrink:0; background:linear-gradient(180deg,#211a10,#171310);
+    border-right:1px solid #3a2f1c; display:flex; flex-direction:column; padding-top:10px;
+  }
+  .nav-item{
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:4px; padding:12px 4px; cursor:pointer; position:relative;
+    border-top:1px solid rgba(255,255,255,.03); border-bottom:1px solid rgba(0,0,0,.4);
+    color:var(--dim); transition: background .12s;
+  }
+  .nav-item .nav-icon{ font-size:20px; filter:grayscale(0.4); }
+  .nav-item .nav-label{ font-size:10px; letter-spacing:.04em; text-align:center; line-height:1.2; }
+  .nav-item.selected{
+    background:linear-gradient(90deg,#3a2f14,#241d10 80%); color:var(--gold);
+    box-shadow: inset 3px 0 0 var(--gold);
+  }
+  .nav-item.selected .nav-icon{ filter:none; }
+  .nav-item.nav-disabled{ opacity:0.45; cursor:default; }
+  .nav-item .nav-soon{ font-size:8px; letter-spacing:.08em; text-transform:uppercase; color:#6a5a30; }
+
+  /* colonna contenuto centrale */
+  .setup-content{
+    flex:1 1 auto; min-width:0; overflow-y:auto; padding:18px 20px;
+    background:linear-gradient(180deg,#15130f,#100e0b);
+  }
+  .setup-section-title{
+    font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--gold);
+    font-weight:700; margin-bottom:12px; border-bottom:1px solid #3a2f1c; padding-bottom:8px;
+  }
+  /* barra di sotto-schede orizzontale in cima al pannello: Personaggio / Equipaggiamento / Potenziamento */
+  .subtab-bar{ display:flex; gap:6px; margin-bottom:16px; border-bottom:1px solid #3a2f1c; }
+  .subtab{
+    padding:8px 14px; font-size:12px; letter-spacing:.05em; color:var(--dim); cursor:pointer;
+    border-bottom:2px solid transparent; transition: color .12s, border-color .12s;
+  }
+  .subtab.selected{ color:var(--gold); border-bottom-color:var(--gold); }
+  .subpanel{ display:none; }
+  .subpanel.active{ display:block; }
+  .content-stub p{ color:var(--dim); font-size:13px; line-height:1.6; }
+  .setup-cards{ display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:10px; }
+
+  /* ---------- Impostazioni (schermata di setup + overlay in-game) ---------- */
+  .settings-section{ margin-bottom:22px; }
+  .settings-section-title{
+    font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--gold);
+    font-weight:700; margin-bottom:10px;
+  }
+  .settings-row{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+  .settings-row label{ font-size:13px; color:var(--text); }
+  .settings-note{ color:var(--dim); font-size:11px; line-height:1.5; margin-top:2px; }
+  .toggle-row{ display:flex; border:1px solid #3a2f1c; border-radius:6px; overflow:hidden; }
+  .toggle-opt{
+    padding:7px 14px; font-size:12px; color:var(--dim); cursor:pointer; background:#171310;
+    transition: background .12s, color .12s;
+  }
+  .toggle-opt.selected{ background:linear-gradient(180deg,#3a2f14,#241d10); color:var(--gold); }
+  .settings-slider{ flex:1; max-width:200px; accent-color: var(--gold); }
+  .settings-btn{
+    pointer-events:auto; font-size:12px; font-weight:600; letter-spacing:.03em;
+    padding:9px 16px; border-radius:8px; border:1px solid var(--panel-edge);
+    background:linear-gradient(180deg,#20242f,#171a22); color:var(--text); cursor:pointer;
+  }
+  .settings-btn.gold{ border-color:var(--gold); color:var(--gold); }
+
+  /* ingranaggio impostazioni visibile durante la partita, in alto a sinistra */
+  #btn-settings-ingame{
+    position:fixed; top:max(10px, env(safe-area-inset-top)); left:14px; z-index:21;
+    width:34px; height:34px; border-radius:50%; pointer-events:auto;
+    background:rgba(20,18,14,.6); border:1px solid var(--panel-edge);
+    display:flex; align-items:center; justify-content:center; font-size:16px;
+  }
+  #training-badge{
+    position:fixed; top:max(10px, env(safe-area-inset-top)); left:56px; z-index:21;
+    display:none; pointer-events:none; font-size:10px; letter-spacing:.06em; font-weight:700;
+    color:#8fc0ff; background:rgba(20,18,14,.6); border:1px solid #4a80c9;
+    border-radius:6px; padding:8px 10px; align-items:center;
+  }
+  #dungeon-hud{
+    position:fixed; top:max(10px, env(safe-area-inset-top)); left:50%; transform:translateX(-50%);
+    z-index:21; display:none; flex-direction:column; align-items:center; gap:3px;
+    pointer-events:none; background:rgba(20,18,14,.65); border:1px solid #c9a227;
+    border-radius:8px; padding:8px 16px; min-width:160px;
+  }
+  #dungeon-wave{ font-size:12px; font-weight:700; letter-spacing:.08em; color:#e6c455; }
+  #king-hp-label{ font-size:9px; letter-spacing:.1em; color:var(--dim); margin-top:2px; }
+  #king-hp-bar{ width:150px; height:8px; background:#2a1f0f; border:1px solid #6a5020; border-radius:4px; overflow:hidden; }
+  #king-hp-fill{ height:100%; width:100%; background:linear-gradient(90deg,#c9a227,#e6c455); transition:width .15s; }
+  #king-hp-text{ font-size:10px; color:var(--dim); }
+  #ingame-settings-overlay{
+    position:fixed; inset:0; z-index:90; display:none;
+    background:rgba(6,7,11,.82); backdrop-filter:blur(2px);
+    align-items:center; justify-content:center;
+  }
+  #ingame-settings-panel{
+    pointer-events:auto; width:min(320px, 86vw); max-height:80vh; overflow-y:auto;
+    background:linear-gradient(180deg,#1c1712,#141110); border:1px solid #3a2f1c;
+    border-radius:10px; padding:18px;
+  }
+  #ingame-settings-panel .setup-section-title{ display:flex; justify-content:space-between; align-items:center; }
+  #ingame-settings-panel .close-x{ cursor:pointer; color:var(--dim); font-size:16px; }
+
+  #tutorial-overlay{
+    position:fixed; inset:0; z-index:95; display:none;
+    background:rgba(6,7,11,.86); backdrop-filter:blur(2px);
+    align-items:center; justify-content:center;
+  }
+  #tutorial-panel{
+    pointer-events:auto; width:min(360px, 88vw); max-height:82vh; overflow-y:auto;
+    background:linear-gradient(180deg,#1c1712,#141110); border:1px solid #3a2f1c;
+    border-radius:10px; padding:18px;
+  }
+  #tutorial-panel .close-x{ cursor:pointer; color:var(--dim); font-size:16px; }
+  .tutorial-tip{
+    font-size:12.5px; line-height:1.55; color:var(--text); margin-bottom:12px;
+    padding-bottom:12px; border-bottom:1px solid #2a2318;
+  }
+  .tutorial-tip:last-of-type{ border-bottom:none; margin-bottom:4px; padding-bottom:0; }
+  .tutorial-tip b{ color:var(--gold); }
+  .setup-card{
+    border:1px solid var(--panel-edge); border-radius:10px; padding:14px 12px;
+    background:linear-gradient(180deg,#1b1712,#141110); cursor:pointer; text-align:left;
+    transition: border-color .15s, transform .1s;
+  }
+  .setup-card:active{ transform:scale(0.97); }
+  .setup-card.selected{ border-color:var(--gold); background:linear-gradient(180deg,#2a2210,#1a1610); }
+  .setup-card .card-icon{ font-size:24px; margin-bottom:6px; }
+  .setup-card .card-name{ font-size:13px; font-weight:700; margin-bottom:4px; color:var(--text); }
+  .setup-card .card-desc{ font-size:11px; color:var(--dim); line-height:1.4; }
+  .setup-card.selected .card-name{ color:var(--gold); }
+
+  /* colonna ritratto: modello 3D che ruota, come una scheda personaggio */
+  .setup-portrait{
+    width:230px; flex-shrink:0; border-left:1px solid #3a2f1c;
+    background:radial-gradient(ellipse at 50% 35%, #211c14 0%, #0d0b08 100%);
+    display:flex; flex-direction:column; align-items:center; justify-content:flex-start;
+  }
+  #portrait-canvas{ width:100%; height:210px; display:block; }
+  .portrait-caption{ padding:8px 14px 16px 14px; text-align:center; }
+  .portrait-name{ font-size:13px; font-weight:700; letter-spacing:.05em; color:var(--gold); margin-bottom:6px; }
+  .portrait-desc{ font-size:10.5px; color:var(--dim); line-height:1.5; }
+
+  #btn-start-match{
+    width:100%; flex-shrink:0; font-size:16px; font-weight:700; letter-spacing:.06em;
+    padding:15px; border-radius:8px; border:1px solid var(--gold);
+    background:linear-gradient(180deg,#3a2f14,#211a0c); color:var(--gold);
+    text-transform:uppercase;
+  }
+
+  /* ---------- Bottom controls ---------- */
+  #hud-bottom{
+    position:fixed; left:0; right:0; bottom:0;
+    padding: 0 16px max(14px, env(safe-area-inset-bottom)) 16px;
+    display:flex; justify-content:space-between; align-items:flex-end;
+    z-index:20; pointer-events:none;
+  }
+  /* joystick sul lato destro invece che sinistro (impostazioni controlli) */
+  #hud-bottom.hud-mirrored{ flex-direction:row-reverse; }
+  /* dimensione dei tasti regolabile dalle impostazioni */
+  #joystick-zone, #action-cluster{ transform: scale(var(--btn-scale, 1)); }
+  #hud-bottom.hud-mirrored #joystick-zone{ transform-origin: right bottom; }
+  #hud-bottom:not(.hud-mirrored) #joystick-zone{ transform-origin: left bottom; }
+  /* ribaltiamo anche la disposizione interna dei pulsanti (altrimenti si
+     affollerebbero verso il centro schermo invece che verso il bordo), e
+     ribaltiamo di nuovo ogni singolo tasto per non capovolgerne il testo */
+  #hud-bottom.hud-mirrored #action-cluster{
+    transform: scale(var(--btn-scale, 1)) scaleX(-1); transform-origin: left bottom;
+  }
+  #hud-bottom:not(.hud-mirrored) #action-cluster{ transform-origin: right bottom; }
+  #hud-bottom.hud-mirrored #action-cluster .btn{ transform: scaleX(-1); }
+
+  /* Joystick */
+  #joystick-zone{
+    width:130px; height:130px; border-radius:50%;
+    background:radial-gradient(circle, rgba(255,255,255,.05), rgba(255,255,255,.02));
+    border:1px solid var(--panel-edge);
+    position:relative; pointer-events:auto;
+  }
+  #joystick-knob{
+    width:54px; height:54px; border-radius:50%;
+    background:linear-gradient(180deg,#3a4051,#232733);
+    border:1px solid #4a5164;
+    position:absolute; left:50%; top:50%;
+    transform:translate(-50%,-50%);
+    box-shadow:0 2px 6px rgba(0,0,0,.5);
+  }
+
+  /* ---------- Cluster azioni stile "Zooba": tasto attacco grande in basso a
+     destra, con abilità/schivata/parata più piccoli disposti ad arco intorno ---------- */
+  #action-cluster{
+    position:relative;
+    width:250px; height:190px;
+    pointer-events:none; /* i figli riabilitano pointer-events singolarmente */
+  }
+  .btn{
+    position:absolute;
+    border-radius:50%;
+    border:1px solid var(--panel-edge);
+    background:linear-gradient(180deg,#20242f,#171a22);
+    display:flex; align-items:center; justify-content:center;
+    color:var(--text); font-weight:700;
+    box-shadow:0 2px 5px rgba(0,0,0,.5);
+    overflow:hidden;
+    pointer-events:auto;
+  }
+  .btn .cd-veil{
+    position:absolute; inset:0; background:rgba(4,5,8,.72);
+    transform-origin:50% 100%;
+    transform:scaleY(0);
+  }
+  .btn .cd-num{
+    position:absolute; font-size:12px; font-weight:700; color:#fff;
+    text-shadow:0 1px 2px #000; z-index:2;
+  }
+  .btn .lbl{ position:relative; z-index:2; font-size:10px; letter-spacing:.03em; }
+  .btn.active{ filter:brightness(1.5); }
+  .btn:active{ filter:brightness(1.3); }
+
+  /* schivata: in basso a sinistra del cluster */
+  .btn-dodge{
+    width:54px; height:54px; font-size:10px; border-color:#4ac97e; color:#8fffb8;
+    right:186px; bottom:6px;
+  }
+  /* le 3 abilità sono ora l'azione primaria (niente più tasto attacco base):
+     più grandi, disposte a ventaglio */
+  .btn-ability{
+    width:66px; height:66px; font-size:17px; border-color:var(--gold); color:var(--gold); border-width:2px;
+  }
+  #btn-a1{ right:104px; bottom:8px; }   /* potente */
+  #btn-a2{ right:24px;  bottom:44px; }  /* rapido */
+  #btn-a3{ right:0px;   bottom:118px; } /* speciale */
+  /* parata: solo se il personaggio ha uno scudo equipaggiato */
+  .btn-parry{
+    width:50px; height:50px; font-size:10px; border-color:#4a80c9; color:#8fc0ff;
+    right:150px; bottom:140px;
+  }
+  .btn-parry.hidden{ display:none; }
+
+  #fps{ position:fixed; bottom:4px; left:4px; font-size:9px; color:#444; z-index:5; }
+
+  /* ---------- Avviso rotazione: il gioco è pensato solo per orizzontale ---------- */
+  #rotate-overlay{
+    position:fixed; inset:0; z-index:100; display:none;
+    background:#05060a; color:var(--text);
+    align-items:center; justify-content:center; flex-direction:column;
+    text-align:center; padding:24px;
+  }
+  #rotate-overlay .icon{ font-size:48px; margin-bottom:14px; animation:rot 1.6s ease-in-out infinite; }
+  #rotate-overlay p{ color:var(--dim); font-size:14px; max-width:260px; margin:6px 0 0 0; }
+  @keyframes rot{ 0%,100%{ transform:rotate(0deg);} 50%{ transform:rotate(-90deg);} }
+  @media (orientation: portrait){
+    #rotate-overlay{ display:flex; }
+    #canvas-wrap, #hud-top, #hud-bottom, #status-text{ visibility:hidden; }
+  }
+</style>
 </head>
-<body>PLACEHOLDER_BODY</body>
+<body>
+
+<div id="canvas-wrap"></div>
+
+<div id="hud-top">
+  <div class="team-col player" id="team-col-player"></div>
+  <div class="team-col enemy" id="team-col-enemy"></div>
+</div>
+
+<div id="training-badge">MODALITÀ ALLENAMENTO</div>
+
+<div id="dungeon-hud">
+  <div id="dungeon-wave">ONDATA <span id="dungeon-wave-num">0</span></div>
+  <div id="king-hp-label">IL RE</div>
+  <div id="king-hp-bar"><div id="king-hp-fill"></div></div>
+  <div id="king-hp-text">500 / 500</div>
+</div>
+
+<div id="btn-settings-ingame">⚙️</div>
+<div id="ingame-settings-overlay">
+  <div id="ingame-settings-panel">
+    <div class="setup-section-title">Controlli <span class="close-x" id="ingame-settings-close">✕</span></div>
+    <div class="settings-section" style="margin-bottom:6px;">
+      <div class="settings-row">
+        <label>Joystick</label>
+        <div class="toggle-row" id="ingame-joystick-side">
+          <div class="toggle-opt" data-value="left">Sinistra</div>
+          <div class="toggle-opt" data-value="right">Destra</div>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label>Dimensione tasti</label>
+        <input type="range" class="settings-slider" id="ingame-btn-scale" min="80" max="130" value="100">
+      </div>
+      <div class="settings-row">
+        <label>Volume effetti</label>
+        <input type="range" class="settings-slider" id="ingame-volume" min="0" max="100" value="80">
+      </div>
+      <div class="settings-row">
+        <label>Volume musica</label>
+        <input type="range" class="settings-slider" id="ingame-music-volume" min="0" max="100" value="35">
+      </div>
+      <button id="btn-exit-training" class="settings-btn gold" style="width:100%; margin-top:6px; display:none;">Esci dall'allenamento</button>
+      <button id="btn-exit-dungeon" class="settings-btn gold" style="width:100%; margin-top:6px; display:none;">Esci dalla difesa del Re</button>
+    </div>
+  </div>
+</div>
+
+<div id="tutorial-overlay">
+  <div id="tutorial-panel">
+    <div class="setup-section-title">Come si gioca <span class="close-x" id="tutorial-close">✕</span></div>
+    <div class="tutorial-tip"><b>Movimento</b> — il joystick a sinistra ti muove; guardi automaticamente verso l'avversario più vicino quando sei fermo.</div>
+    <div class="tutorial-tip"><b>Abilità (1·2·3)</b> — tieni premuto un tasto abilità: l'indicatore a terra passa dal rosso al verde. Rilascia quando è verde per il colpo pieno — rilasciare prima annulla tutto, senza penalità.</div>
+    <div class="tutorial-tip"><b>Mira a trascinamento</b> — mentre tieni premuto un tasto abilità, trascina il dito per orientare il colpo in tempo reale, invece di affidarti solo alla mira automatica.</div>
+    <div class="tutorial-tip"><b>Parata e Schivata</b> — azioni istantanee a un solo tocco. La parata (se hai uno scudo) blocca il danno e stordisce chi ti ha colpito; la schivata ti rende invulnerabile per un istante.</div>
+    <div class="tutorial-tip"><b>Interruzioni</b> — alcuni colpi (carica, aggancio, colpi decisi) interrompono il cast di un avversario se lo colpisci mentre sta caricando un'abilità; colpi rotanti, raffiche e lanci infliggono comunque danno ma senza interrompere.</div>
+    <div class="tutorial-tip"><b>Nascondersi</b> — le zone d'ombra/vegetazione sparse nell'arena ti rendono semi-trasparente e, se resti abbastanza lontano, l'IA può perderti di vista.</div>
+    <button id="tutorial-got-it" class="settings-btn gold" style="width:100%; margin-top:8px;">Ho capito</button>
+  </div>
+</div>
+
+<canvas id="minimap" width="110" height="110"></canvas>
+
+<div id="status-text"></div>
+
+<div id="overlay">
+  <h1 id="overlay-title">Vittoria</h1>
+  <p id="overlay-sub">Hai sconfitto il nemico.</p>
+  <div id="overlay-stats">
+    <div class="overlay-stat"><span class="overlay-stat-label">Danno inflitto</span><span class="overlay-stat-value" id="stat-damage-dealt">0</span></div>
+    <div class="overlay-stat"><span class="overlay-stat-label">Danno subito</span><span class="overlay-stat-value" id="stat-damage-taken">0</span></div>
+    <div class="overlay-stat"><span class="overlay-stat-label">Colpi parati</span><span class="overlay-stat-value" id="stat-parries">0</span></div>
+    <div class="overlay-stat"><span class="overlay-stat-label" id="stat-mvp-label">MVP squadra</span><span class="overlay-stat-value" id="stat-mvp">—</span></div>
+  </div>
+  <button id="btn-restart">Rivincita</button>
+  <button id="btn-change-loadout" class="secondary">Cambia equipaggiamento</button>
+</div>
+
+<div id="setup-screen">
+  <div class="setup-layout">
+
+    <nav class="setup-nav">
+      <div class="nav-item selected" data-tab="loadout" data-subtab="loadout">
+        <span class="nav-icon">⚔️</span><span class="nav-label">Equipaggiamento</span>
+      </div>
+      <div class="nav-item" data-tab="settings">
+        <span class="nav-icon">⚙️</span><span class="nav-label">Impostazioni</span>
+      </div>
+      <div class="nav-item nav-disabled" data-tab="team">
+        <span class="nav-icon">🛡️</span><span class="nav-label">Squadra</span><span class="nav-soon">presto</span>
+      </div>
+      <div class="nav-item nav-disabled" data-tab="arena">
+        <span class="nav-icon">🏰</span><span class="nav-label">Arena</span><span class="nav-soon">presto</span>
+      </div>
+    </nav>
+
+    <div class="setup-content">
+      <div class="content-panel" data-panel="loadout">
+        <div class="subtab-bar">
+          <div class="subtab" data-subtab="character">Personaggio</div>
+          <div class="subtab selected" data-subtab="loadout">Equipaggiamento</div>
+          <div class="subtab" data-subtab="buff">Potenziamento</div>
+        </div>
+        <div class="subpanel" data-subpanel="character">
+          <div class="setup-section-title">Scegli il personaggio</div>
+          <div class="setup-cards" id="character-cards"></div>
+        </div>
+        <div class="subpanel active" data-subpanel="loadout">
+          <div class="setup-section-title">Scegli l'arma</div>
+          <div class="setup-cards" id="loadout-cards"></div>
+        </div>
+        <div class="subpanel" data-subpanel="buff">
+          <div class="setup-section-title">Scegli il potenziamento</div>
+          <div class="setup-cards" id="buff-cards"></div>
+        </div>
+      </div>
+      <div class="content-panel content-stub" data-panel="team" style="display:none">
+        <div class="setup-section-title">Squadra</div>
+        <p>La scelta di alleati e altre classi di personaggio (oltre al Guerriero) arriverà in un prossimo aggiornamento. Per ora 2 alleati e 3 avversari sono generati automaticamente.</p>
+      </div>
+      <div class="content-panel content-stub" data-panel="arena" style="display:none">
+        <div class="setup-section-title">Arena</div>
+        <p>Altre arene oltre al castello in rovina arriveranno in un prossimo aggiornamento.</p>
+      </div>
+      <div class="content-panel" data-panel="settings" style="display:none">
+        <div class="setup-section-title">Impostazioni</div>
+
+        <div class="settings-section">
+          <div class="settings-section-title">Grafica</div>
+          <div class="settings-row">
+            <label>Qualità</label>
+            <div class="toggle-row" id="settings-graphics-toggle">
+              <div class="toggle-opt" data-value="low">Bassa</div>
+              <div class="toggle-opt selected" data-value="high">Alta</div>
+            </div>
+          </div>
+          <div class="settings-note">Bassa qualità disattiva le ombre e riduce la risoluzione: utile per telefoni meno recenti o per risparmiare batteria.</div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-title">Audio</div>
+          <div class="settings-row">
+            <label>Volume effetti</label>
+            <input type="range" class="settings-slider" id="settings-volume" min="0" max="100" value="80">
+          </div>
+          <div class="settings-row">
+            <label>Volume musica</label>
+            <input type="range" class="settings-slider" id="settings-music-volume" min="0" max="100" value="35">
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-title">Account</div>
+          <div class="settings-row">
+            <label>Google Play Games</label>
+            <button class="settings-btn" id="settings-google-play">Collega account</button>
+          </div>
+          <div class="settings-note" id="settings-google-play-note">Il collegamento a un vero account (Google Play, Gmail o Facebook) richiederebbe un server dedicato e non è possibile in questa versione — una pagina web da sola non può farlo in modo sicuro. Le tue impostazioni però si salvano comunque in automatico su questo dispositivo, senza bisogno di accedere a nulla.</div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-title">Modalità di gioco</div>
+          <div class="settings-row">
+            <label>Modalità</label>
+            <div class="toggle-row" id="game-mode-toggle">
+              <div class="toggle-opt selected" data-value="duel">Duello 3v3</div>
+              <div class="toggle-opt" data-value="dungeon">Difendi il Re</div>
+              <div class="toggle-opt" data-value="training">Allenamento</div>
+            </div>
+          </div>
+          <div class="settings-note" id="game-mode-note">3 alleati contro 3 avversari controllati dall'IA: vinci eliminando tutta la squadra nemica.</div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-title">Controlli</div>
+          <div class="settings-row">
+            <label>Joystick</label>
+            <div class="toggle-row" id="settings-joystick-side">
+              <div class="toggle-opt selected" data-value="left">Sinistra</div>
+              <div class="toggle-opt" data-value="right">Destra</div>
+            </div>
+          </div>
+          <div class="settings-row">
+            <label>Dimensione tasti</label>
+            <input type="range" class="settings-slider" id="settings-btn-scale" min="80" max="130" value="100">
+          </div>
+          <div class="settings-note">Puoi cambiare questi due controlli anche durante il duello, toccando l'icona ⚙️ in alto a sinistra.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="setup-portrait">
+      <canvas id="portrait-canvas"></canvas>
+      <div class="portrait-caption">
+        <div class="portrait-name" id="portrait-name">Spada e Scudo</div>
+        <div class="portrait-desc" id="portrait-desc"></div>
+      </div>
+    </div>
+
+  </div>
+  <div class="settings-row" style="margin:0 0 10px 0;">
+    <label style="font-size:12px; color:var(--dim);">Difficoltà avversari</label>
+    <div class="toggle-row" id="ai-difficulty-toggle">
+      <div class="toggle-opt" data-value="easy">Facile</div>
+      <div class="toggle-opt selected" data-value="medium">Medio</div>
+      <div class="toggle-opt" data-value="hard">Difficile</div>
+    </div>
+  </div>
+  <div style="display:flex; gap:8px;">
+    <button id="btn-tutorial" style="flex:0 0 auto; background:transparent; border:1px solid var(--panel-edge); color:var(--dim); border-radius:10px; padding:0 16px; font-size:12px;">Come si gioca</button>
+    <button id="btn-start-match" style="flex:1;">Comincia il Duello</button>
+  </div>
+</div>
+
+<div id="hud-bottom">
+  <div id="joystick-zone"><div id="joystick-knob"></div></div>
+
+  <div id="action-cluster">
+    <div class="btn btn-dodge" id="btn-dodge" data-action="dodge">
+      <div class="cd-veil"></div><div class="cd-num"></div><span class="lbl">SCHIVA</span>
+    </div>
+    <div class="btn btn-ability" id="btn-a2" data-action="slot2">
+      <div class="cd-veil"></div><div class="cd-num"></div><span class="lbl">CARICA</span>
+    </div>
+    <div class="btn btn-ability" id="btn-a1" data-action="slot1">
+      <div class="cd-veil"></div><div class="cd-num"></div><span class="lbl">ROTA</span>
+    </div>
+    <div class="btn btn-ability" id="btn-a3" data-action="slot3">
+      <div class="cd-veil"></div><div class="cd-num"></div><span class="lbl">SPADA</span>
+    </div>
+    <div class="btn btn-parry" id="btn-parry" data-action="parry">
+      <div class="cd-veil"></div><div class="cd-num"></div><span class="lbl">BLOCCA</span>
+    </div>
+  </div>
+</div>
+
+<div id="fps"></div>
+
+<div id="rotate-overlay">
+  <div class="icon">📱</div>
+  <div style="font-weight:700; letter-spacing:.04em;">Ruota il dispositivo</div>
+  <p>Arena di Duello è pensato per essere giocato in orizzontale.</p>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* =========================================================================
+   ARENA DI DUELLO — prototipo di combattimento PvP 3D basato sul timing
+   Ispirato a Battlerite: cooldown, parata, schivata, interruzione dei cast.
+   Nessun mana. Architettura modulare per future espansioni (classi, armi,
+   abilità, equipaggiamento, multiplayer).
+   ========================================================================= */
+
+/* ------------------------------------------------------------------ *
+ * 1. CONFIGURAZIONE GLOBALE — tutti i numeri di bilanciamento qui
+ * ------------------------------------------------------------------ */
+const gameSettings = { graphics:'high', volume:0.8, musicVolume:0.35, joystickSide:'left', btnScale:1 };
+
+const SETTINGS_STORAGE_KEY = 'arena-duello-settings-v1';
+function loadSavedSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (saved && typeof saved === 'object') Object.assign(gameSettings, saved);
+  } catch (e) { }
+}
+function saveSettings() {
+  try { localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(gameSettings)); }
+  catch (e) { }
+}
+loadSavedSettings();
+
+function applyGraphicsQuality(level) {
+  gameSettings.graphics = level;
+  const high = level === 'high';
+  renderer.shadowMap.enabled = high;
+  renderer.setPixelRatio(high ? Math.min(window.devicePixelRatio, 2) : 1);
+  saveSettings();
+}
+function applyVolume(v01) {
+  gameSettings.volume = v01;
+  if (masterGainNode) masterGainNode.gain.value = v01;
+  saveSettings();
+}
+function applyMusicVolume(v01) {
+  gameSettings.musicVolume = v01;
+  if (musicGainNode) musicGainNode.gain.value = v01;
+  saveSettings();
+}
+function applyJoystickSide(side) {
+  gameSettings.joystickSide = side;
+  document.getElementById('hud-bottom').classList.toggle('hud-mirrored', side === 'right');
+  saveSettings();
+}
+function applyBtnScale(scale01to130) {
+  gameSettings.btnScale = scale01to130;
+  document.documentElement.style.setProperty('--btn-scale', scale01to130);
+  saveSettings();
+}
+
+PLACEHOLDER_REST_OF_SCRIPT
+</script>
+</body>
 </html>
