@@ -512,6 +512,9 @@
           <div class="toggle-opt nav-mode-opt" data-value="training">Allenamento</div>
         </div>
       </div>
+      <div class="nav-item" data-tab="friends">
+        <span class="nav-icon">👥</span><span class="nav-label">Amici</span>
+      </div>
       <div class="nav-item nav-disabled" data-tab="team">
         <span class="nav-icon">🛡️</span><span class="nav-label">Squadra</span><span class="nav-soon">presto</span>
       </div>
@@ -543,6 +546,37 @@
       <div class="content-panel content-stub" data-panel="team" style="display:none">
         <div class="setup-section-title">Squadra</div>
         <p>La scelta di alleati e altre classi di personaggio (oltre al Guerriero) arriverà in un prossimo aggiornamento. Per ora 2 alleati e 3 avversari sono generati automaticamente.</p>
+      </div>
+      <div class="content-panel" data-panel="friends" style="display:none">
+        <div class="setup-section-title">Amici</div>
+        <div id="friends-setup-username" style="display:none;">
+          <p style="color:var(--dim); font-size:13px; line-height:1.5; margin-bottom:12px;">Scegli un nome utente per iniziare ad aggiungere amici e ricevere inviti.</p>
+          <div class="settings-row">
+            <input type="text" id="friends-username-input" maxlength="20" placeholder="Il tuo nome utente" style="flex:1; background:#171310; border:1px solid var(--panel-edge); border-radius:6px; padding:8px 10px; color:var(--text); font-size:13px;">
+            <button class="settings-btn gold" id="friends-username-save">Conferma</button>
+          </div>
+          <div class="settings-note" id="friends-username-error" style="color:#d97a6a;"></div>
+        </div>
+        <div id="friends-main" style="display:none;">
+          <div class="settings-note" style="margin-bottom:16px; font-size:12px;">Connesso come <b id="friends-my-username" style="color:var(--gold);"></b></div>
+          <div class="settings-section">
+            <div class="settings-section-title">Aggiungi amico</div>
+            <div class="settings-row">
+              <input type="text" id="friends-add-input" maxlength="20" placeholder="Nome utente dell'amico" style="flex:1; background:#171310; border:1px solid var(--panel-edge); border-radius:6px; padding:8px 10px; color:var(--text); font-size:13px;">
+              <button class="settings-btn" id="friends-add-btn">Invita</button>
+            </div>
+            <div class="settings-note" id="friends-add-status"></div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">Richieste in arrivo</div>
+            <div id="friends-pending-list" class="settings-note">Nessuna richiesta in arrivo.</div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">I tuoi amici</div>
+            <div id="friends-list" class="settings-note">Non hai ancora amici aggiunti.</div>
+          </div>
+          <div class="settings-note" style="opacity:0.75;">Qui gestisci la lista amici e gli inviti. Giocare davvero insieme nella stessa partita è una funzione a parte, non ancora pronta.</div>
+        </div>
       </div>
       <div class="content-panel content-stub" data-panel="arena" style="display:none">
         <div class="setup-section-title">Arena</div>
@@ -3922,6 +3956,133 @@ document.querySelectorAll('.nav-item').forEach(item => {
     if (item.dataset.subtab) activateSubtab(item.dataset.subtab);
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * 13-ter. AMICI — lista amici leggera appoggiata a Supabase. Nessuna
+ *    vera autenticazione: un nome utente scelto una volta, salvato sul
+ *    dispositivo. Gestisce solo la lista amici/inviti — giocare davvero
+ *    insieme nella stessa partita in tempo reale è una funzione separata,
+ *    non ancora costruita.
+ * ------------------------------------------------------------------ */
+const SUPABASE_URL = 'https://fknyopikwgktrewqeqwk.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZrbnlvcGlrd2drdHJld3FlcXdrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE3MjQwNDcsImV4cCI6MjEwNzMwMDA0N30.zY7CMwGsjNOPuZ6N4o3VOgOvX_9eNovo67-mk9wpIXU';
+async function supaFetch(path, opts = {}) {
+  const res = await fetch(SUPABASE_URL + '/rest/v1/' + path, {
+    ...opts,
+    headers: {
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+      'Content-Type': 'application/json',
+      'Prefer': 'return=representation',
+      ...(opts.headers || {}),
+    },
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
+}
+
+let myPlayerId = null;
+let myUsername = null;
+
+function friendsInit() {
+  myPlayerId = localStorage.getItem('arena-duello-player-id');
+  myUsername = localStorage.getItem('arena-duello-username');
+  const setupEl = document.getElementById('friends-setup-username');
+  const mainEl = document.getElementById('friends-main');
+  if (myPlayerId && myUsername) {
+    setupEl.style.display = 'none';
+    mainEl.style.display = 'block';
+    document.getElementById('friends-my-username').textContent = myUsername;
+    friendsRefresh();
+  } else {
+    setupEl.style.display = 'block';
+    mainEl.style.display = 'none';
+  }
+}
+
+document.getElementById('friends-username-save').addEventListener('click', async () => {
+  const input = document.getElementById('friends-username-input');
+  const errEl = document.getElementById('friends-username-error');
+  const name = input.value.trim();
+  errEl.textContent = '';
+  if (name.length < 2) { errEl.textContent = 'Serve almeno 2 caratteri.'; return; }
+  try {
+    const rows = await supaFetch('players', { method:'POST', body: JSON.stringify({ username: name }) });
+    myPlayerId = rows[0].id;
+    myUsername = rows[0].username;
+    localStorage.setItem('arena-duello-player-id', myPlayerId);
+    localStorage.setItem('arena-duello-username', myUsername);
+    friendsInit();
+  } catch (e) {
+    errEl.textContent = 'Nome già in uso, provane un altro.';
+  }
+});
+
+document.getElementById('friends-add-btn').addEventListener('click', async () => {
+  const input = document.getElementById('friends-add-input');
+  const statusEl = document.getElementById('friends-add-status');
+  const name = input.value.trim();
+  statusEl.textContent = '';
+  if (!name) return;
+  if (name.toLowerCase() === (myUsername||'').toLowerCase()) { statusEl.textContent = 'Non puoi invitare te stesso.'; return; }
+  try {
+    const found = await supaFetch(`players?username=eq.${encodeURIComponent(name)}`);
+    if (!found.length) { statusEl.textContent = 'Nessun utente con questo nome.'; return; }
+    const theirId = found[0].id;
+    await supaFetch('friend_requests', { method:'POST', body: JSON.stringify({ from_player_id: myPlayerId, to_player_id: theirId, status:'pending' }) });
+    statusEl.textContent = `Richiesta inviata a ${found[0].username}.`;
+    input.value = '';
+    friendsRefresh();
+  } catch (e) {
+    statusEl.textContent = 'Richiesta già inviata o errore.';
+  }
+});
+
+async function friendsRefresh() {
+  if (!myPlayerId) return;
+  const pendingEl = document.getElementById('friends-pending-list');
+  const listEl = document.getElementById('friends-list');
+  try {
+    const incoming = await supaFetch(`friend_requests?to_player_id=eq.${myPlayerId}&status=eq.pending`);
+    if (!incoming.length) {
+      pendingEl.textContent = 'Nessuna richiesta in arrivo.';
+    } else {
+      const ids = incoming.map(r => r.from_player_id);
+      const senders = await supaFetch(`players?id=in.(${ids.join(',')})`);
+      pendingEl.innerHTML = '';
+      for (const req of incoming) {
+        const sender = senders.find(s => s.id === req.from_player_id);
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px;';
+        row.innerHTML = `<span style="color:var(--text); font-size:13px;">${sender ? sender.username : '???'}</span>`;
+        const btnAccept = document.createElement('button');
+        btnAccept.className = 'settings-btn gold'; btnAccept.textContent = 'Accetta'; btnAccept.style.fontSize = '11px'; btnAccept.style.padding = '5px 10px';
+        btnAccept.addEventListener('click', async () => { await supaFetch(`friend_requests?id=eq.${req.id}`, { method:'PATCH', body: JSON.stringify({ status:'accepted' }) }); friendsRefresh(); });
+        const btnDecline = document.createElement('button');
+        btnDecline.className = 'settings-btn'; btnDecline.textContent = 'Rifiuta'; btnDecline.style.fontSize = '11px'; btnDecline.style.padding = '5px 10px';
+        btnDecline.addEventListener('click', async () => { await supaFetch(`friend_requests?id=eq.${req.id}`, { method:'PATCH', body: JSON.stringify({ status:'declined' }) }); friendsRefresh(); });
+        const btnWrap = document.createElement('div'); btnWrap.style.cssText = 'display:flex; gap:6px;';
+        btnWrap.appendChild(btnAccept); btnWrap.appendChild(btnDecline);
+        row.appendChild(btnWrap);
+        pendingEl.appendChild(row);
+      }
+    }
+
+    const accepted = await supaFetch(`friend_requests?status=eq.accepted&or=(from_player_id.eq.${myPlayerId},to_player_id.eq.${myPlayerId})`);
+    if (!accepted.length) {
+      listEl.textContent = 'Non hai ancora amici aggiunti.';
+    } else {
+      const otherIds = accepted.map(r => r.from_player_id === myPlayerId ? r.to_player_id : r.from_player_id);
+      const friendsData = await supaFetch(`players?id=in.(${otherIds.join(',')})`);
+      listEl.innerHTML = friendsData.map(p => `<div style="padding:4px 0; color:var(--text); font-size:13px;">🟢 ${p.username}</div>`).join('');
+    }
+  } catch (e) {
+    pendingEl.textContent = 'Errore di connessione.';
+  }
+}
+
+document.querySelector('[data-tab="friends"]').addEventListener('click', friendsInit);
 
 /* --- Impostazioni: schermata di setup + overlay ⚙️ in-game, tenuti in
    sincronia — cambiare un controllo in un posto aggiorna anche l'altro. --- */
