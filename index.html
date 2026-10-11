@@ -76,6 +76,27 @@
     z-index:19; pointer-events:none;
   }
 
+  /* ---------- Barre HP fluttuanti sopra ogni personaggio ---------- */
+  #floating-hpbars{ position:fixed; inset:0; pointer-events:none; z-index:15; }
+  .floating-hpbar{
+    position:absolute; transform:translate(-50%, -100%);
+    display:flex; flex-direction:column; align-items:center; gap:2px;
+    pointer-events:none; will-change:transform;
+  }
+  .floating-hpbar .bar-outer{
+    width:52px; height:7px; border-radius:4px; background:rgba(8,9,13,.72);
+    border:1px solid rgba(255,255,255,.22); overflow:hidden;
+    box-shadow:0 1px 3px rgba(0,0,0,.5);
+  }
+  .floating-hpbar .bar-inner{ height:100%; width:100%; border-radius:4px; transition:width .15s ease-out; }
+  .floating-hpbar.team-blue .bar-inner{ background:linear-gradient(90deg,#3a9a8c,#5fd0c0); }
+  .floating-hpbar.team-red .bar-inner{ background:linear-gradient(90deg,#e0546b,#a83248); }
+  .floating-hpbar.is-king .bar-inner{ background:linear-gradient(90deg,#c9a227,#e6c455); }
+  .floating-hpbar .bar-text{
+    font-size:9px; font-weight:700; color:#fff; letter-spacing:.02em;
+    text-shadow:0 1px 2px rgba(0,0,0,.95), 0 0 2px rgba(0,0,0,.8);
+  }
+
   /* ---------- Center status text ---------- */
   #status-text{
     position:fixed; top: 64px; left:50%; transform:translateX(-50%);
@@ -381,6 +402,7 @@
 <body>
 
 <div id="canvas-wrap"></div>
+<div id="floating-hpbars"></div>
 
 <div id="hud-top">
   <div class="team-col player" id="team-col-player"></div>
@@ -1885,6 +1907,46 @@ const foe2   = createFighter({ tabardColor:0x7a2f2f, loadoutId: randomLoadoutId(
 const foe3   = createFighter({ tabardColor:0x7a2f2f, loadoutId: randomLoadoutId(), buffId:'none', x:TEAM_SPAWN_OFFSETS[2], z:-7, isPlayer:false, team:'red', name:'Nemico 3' });
 const fighters = [player, ally1, ally2, foe1, foe2, foe3];
 
+/* ------------------------------------------------------------------ *
+ * 5-bis. BARRE HP FLUTTUANTI — un piccolo elemento DOM per ogni
+ *    combattente, riposizionato ogni frame sopra la sua testa in base
+ *    alla proiezione della posizione 3D sullo schermo. Mostra anche il
+ *    numero esatto (es. "72 / 100"), non solo la barra colorata.
+ * ------------------------------------------------------------------ */
+const floatingHpBarsContainer = document.getElementById('floating-hpbars');
+const _hpBarProjectVec = new THREE.Vector3();
+function createFloatingHpBar(f) {
+  const el = document.createElement('div');
+  el.className = 'floating-hpbar ' + (f.team === 'blue' ? 'team-blue' : 'team-red') + (f.isKing ? ' is-king' : '');
+  el.innerHTML = `<div class="bar-outer"><div class="bar-inner"></div></div><div class="bar-text"></div>`;
+  floatingHpBarsContainer.appendChild(el);
+  f.floatingHpEl = el;
+  f.floatingHpFillEl = el.querySelector('.bar-inner');
+  f.floatingHpTextEl = el.querySelector('.bar-text');
+}
+for (const f of fighters) createFloatingHpBar(f);
+
+function updateFloatingHpBars() {
+  for (const f of fighters) {
+    const el = f.floatingHpEl;
+    if (!el) continue;
+    if (!f.alive) { el.style.display = 'none'; continue; }
+    const headY = f.isKing ? 2.5 : 2.35;
+    _hpBarProjectVec.set(f.x, headY, f.z);
+    _hpBarProjectVec.project(camera);
+    if (_hpBarProjectVec.z > 1 || _hpBarProjectVec.z < -1) { el.style.display = 'none'; continue; }
+    const sx = (_hpBarProjectVec.x * 0.5 + 0.5) * window.innerWidth;
+    const sy = (-_hpBarProjectVec.y * 0.5 + 0.5) * window.innerHeight;
+    if (sx < -60 || sx > window.innerWidth + 60 || sy < -40 || sy > window.innerHeight + 40) { el.style.display = 'none'; continue; }
+    el.style.display = 'flex';
+    el.style.left = sx + 'px';
+    el.style.top = sy + 'px';
+    const pct = Math.max(0, Math.min(100, (f.hp / f.maxHp) * 100));
+    f.floatingHpFillEl.style.width = pct + '%';
+    f.floatingHpTextEl.textContent = `${Math.ceil(Math.max(0, f.hp))} / ${f.maxHp}`;
+  }
+}
+
 function opposingTeam(team) { return team === 'blue' ? 'red' : 'blue'; }
 function aliveOpponents(f) { return fighters.filter(o => o.team !== f.team && o.alive); }
 function aliveAllies(f) { return fighters.filter(o => o.team === f.team && o.alive); }
@@ -2692,6 +2754,7 @@ function createKing() {
   k.maxHp = 500; k.hp = 500;
   k.isKing = true;
   fighters.push(k);
+  createFloatingHpBar(k);
   return k;
 }
 
@@ -2724,6 +2787,7 @@ function spawnWaveEnemy(waveN) {
   f.hp = f.maxHp;
   fighters.push(f);
   waveEnemies.push(f);
+  createFloatingHpBar(f);
   return f;
 }
 
@@ -4164,6 +4228,7 @@ function frame(now) {
 
   for (const f of fighters) syncVisual(f, dt);
   updateCamera(dt);
+  updateFloatingHpBars();
   updateCooldownButtons();
   updateMinimap();
 
