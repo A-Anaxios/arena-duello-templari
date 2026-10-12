@@ -261,6 +261,19 @@
   #ingame-settings-panel .setup-section-title{ display:flex; justify-content:space-between; align-items:center; }
   #ingame-settings-panel .close-x{ cursor:pointer; color:var(--dim); font-size:16px; }
 
+  #lobby-overlay{
+    position:fixed; inset:0; z-index:96; display:none;
+    background:rgba(6,7,11,.86); backdrop-filter:blur(2px);
+    align-items:center; justify-content:center;
+  }
+  #lobby-panel{
+    pointer-events:auto; width:min(340px, 88vw); max-height:82vh; overflow-y:auto;
+    background:linear-gradient(180deg,#1c1712,#141110); border:1px solid #3a2f1c;
+    border-radius:10px; padding:18px; text-align:center;
+  }
+  #lobby-panel .close-x{ cursor:pointer; color:var(--dim); font-size:16px; }
+  #lobby-players{ min-height:30px; }
+
   #tutorial-overlay{
     position:fixed; inset:0; z-index:95; display:none;
     background:rgba(6,7,11,.86); backdrop-filter:blur(2px);
@@ -477,6 +490,16 @@
   </div>
 </div>
 
+<div id="lobby-overlay">
+  <div id="lobby-panel">
+    <div class="setup-section-title">Sala d'attesa <span class="close-x" id="lobby-close">✕</span></div>
+    <div class="settings-note">Codice sala: <b id="lobby-code" style="color:var(--gold); font-size:16px; letter-spacing:.1em;"></b></div>
+    <div id="lobby-players" style="margin:14px 0;"></div>
+    <div class="settings-note" id="lobby-waiting-note">In attesa che l'amico si colleghi...</div>
+    <button id="lobby-start-btn" class="settings-btn gold" style="width:100%; margin-top:10px; display:none;">Avvia la partita</button>
+  </div>
+</div>
+
 <canvas id="minimap" width="110" height="110"></canvas>
 
 <div id="status-text"></div>
@@ -570,6 +593,10 @@
           <div class="settings-section">
             <div class="settings-section-title">Richieste in arrivo</div>
             <div id="friends-pending-list" class="settings-note">Nessuna richiesta in arrivo.</div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-title">Inviti a giocare</div>
+            <div id="match-invites-list" class="settings-note">Nessun invito a giocare.</div>
           </div>
           <div class="settings-section">
             <div class="settings-section-title">I tuoi amici</div>
@@ -689,6 +716,7 @@
   <p>Arena di Duello è pensato per essere giocato in orizzontale.</p>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 /* =========================================================================
@@ -4075,14 +4103,123 @@ async function friendsRefresh() {
     } else {
       const otherIds = accepted.map(r => r.from_player_id === myPlayerId ? r.to_player_id : r.from_player_id);
       const friendsData = await supaFetch(`players?id=in.(${otherIds.join(',')})`);
-      listEl.innerHTML = friendsData.map(p => `<div style="padding:4px 0; color:var(--text); font-size:13px;">🟢 ${p.username}</div>`).join('');
+      listEl.innerHTML = '';
+      for (const p of friendsData) {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px;';
+        row.innerHTML = `<span style="color:var(--text); font-size:13px;">🟢 ${p.username}</span>`;
+        const btn = document.createElement('button');
+        btn.className = 'settings-btn'; btn.textContent = '🎮 Invita a giocare'; btn.style.fontSize = '11px'; btn.style.padding = '5px 10px';
+        btn.addEventListener('click', () => inviteFriendToPlay(p.id, p.username));
+        row.appendChild(btn);
+        listEl.appendChild(row);
+      }
     }
+    await checkRoomInvites();
   } catch (e) {
     pendingEl.textContent = 'Errore di connessione.';
   }
 }
 
 document.querySelector('[data-tab="friends"]').addEventListener('click', friendsInit);
+
+/* ------------------------------------------------------------------ *
+ * 13-quater. MULTIPLAYER (fase 1: sale e inviti) — un amico può essere
+ *    invitato a una "sala d'attesa" dove ci si vede entrambi collegati
+ *    in tempo reale (Supabase Realtime Presence). Avviare da qui una
+ *    partita vera sincronizzata tra i due dispositivi è la fase
+ *    successiva, non ancora costruita: per ora il pulsante "Avvia la
+ *    partita" lo ricorda soltanto.
+ * ------------------------------------------------------------------ */
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+let currentRoomId = null;
+let currentRoomCode = null;
+let isRoomHost = false;
+let lobbyChannel = null;
+
+function randomRoomCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  return code;
+}
+
+async function inviteFriendToPlay(friendId, friendUsername) {
+  const code = randomRoomCode();
+  const rooms = await supaFetch('rooms', { method:'POST', body: JSON.stringify({ code, host_player_id: myPlayerId, status:'waiting' }) });
+  const room = rooms[0];
+  await supaFetch('room_invites', { method:'POST', body: JSON.stringify({ room_id: room.id, from_player_id: myPlayerId, to_player_id: friendId, status:'pending' }) });
+  openLobby(room.id, room.code, true);
+}
+
+function openLobby(roomId, code, asHost) {
+  currentRoomId = roomId;
+  currentRoomCode = code;
+  isRoomHost = asHost;
+  document.getElementById('lobby-code').textContent = code;
+  document.getElementById('lobby-start-btn').style.display = asHost ? 'block' : 'none';
+  document.getElementById('lobby-overlay').style.display = 'flex';
+  connectLobbyPresence();
+}
+
+function connectLobbyPresence() {
+  if (lobbyChannel) supabaseClient.removeChannel(lobbyChannel);
+  lobbyChannel = supabaseClient.channel('room:' + currentRoomId, { config: { presence: { key: myPlayerId } } });
+  lobbyChannel.on('presence', { event: 'sync' }, () => {
+    const state = lobbyChannel.presenceState();
+    const names = Object.values(state).map(arr => arr[0].username);
+    const listEl = document.getElementById('lobby-players');
+    listEl.innerHTML = names.map(n => `<div style="padding:4px 0; color:var(--text); font-size:13px;">🟢 ${n}</div>`).join('');
+    document.getElementById('lobby-waiting-note').style.display = names.length > 1 ? 'none' : 'block';
+  });
+  lobbyChannel.subscribe(async (status) => {
+    if (status === 'SUBSCRIBED') {
+      await lobbyChannel.track({ username: myUsername, player_id: myPlayerId });
+    }
+  });
+}
+
+document.getElementById('lobby-close').addEventListener('click', () => {
+  document.getElementById('lobby-overlay').style.display = 'none';
+  if (lobbyChannel) { supabaseClient.removeChannel(lobbyChannel); lobbyChannel = null; }
+  currentRoomId = null;
+});
+
+document.getElementById('lobby-start-btn').addEventListener('click', () => {
+  // la sincronizzazione vera della partita arriverà in una fase successiva:
+  // per ora la sala d'attesa mostra solo chi è collegato in tempo reale
+  showStatus('La partita sincronizzata arriva nella prossima fase');
+});
+
+async function checkRoomInvites() {
+  const el = document.getElementById('match-invites-list');
+  if (!el) return;
+  try {
+    const invites = await supaFetch(`room_invites?to_player_id=eq.${myPlayerId}&status=eq.pending`);
+    if (!invites.length) { el.textContent = 'Nessun invito a giocare.'; return; }
+    const roomIds = invites.map(i => i.room_id);
+    const rooms = await supaFetch(`rooms?id=in.(${roomIds.join(',')})`);
+    const fromIds = invites.map(i => i.from_player_id);
+    const senders = await supaFetch(`players?id=in.(${fromIds.join(',')})`);
+    el.innerHTML = '';
+    for (const inv of invites) {
+      const room = rooms.find(r => r.id === inv.room_id);
+      const sender = senders.find(s => s.id === inv.from_player_id);
+      if (!room) continue;
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px;';
+      row.innerHTML = `<span style="color:var(--text); font-size:13px;">${sender ? sender.username : '???'}</span>`;
+      const btn = document.createElement('button');
+      btn.className = 'settings-btn gold'; btn.textContent = 'Entra'; btn.style.fontSize = '11px'; btn.style.padding = '5px 10px';
+      btn.addEventListener('click', async () => {
+        await supaFetch(`room_invites?id=eq.${inv.id}`, { method:'PATCH', body: JSON.stringify({ status:'accepted' }) });
+        openLobby(room.id, room.code, false);
+      });
+      row.appendChild(btn);
+      el.appendChild(row);
+    }
+  } catch (e) { /* silenzioso: la lista resta a quella precedente */ }
+}
 
 /* --- Impostazioni: schermata di setup + overlay ⚙️ in-game, tenuti in
    sincronia — cambiare un controllo in un posto aggiorna anche l'altro. --- */
