@@ -1979,6 +1979,7 @@ const foe1   = createFighter({ tabardColor:0x7a2f2f, loadoutId: randomLoadoutId(
 const foe2   = createFighter({ tabardColor:0x7a2f2f, loadoutId: randomLoadoutId(), buffId:'none', x:TEAM_SPAWN_OFFSETS[1], z:-7, isPlayer:false, team:'red', name:'Nemico 2' });
 const foe3   = createFighter({ tabardColor:0x7a2f2f, loadoutId: randomLoadoutId(), buffId:'none', x:TEAM_SPAWN_OFFSETS[2], z:-7, isPlayer:false, team:'red', name:'Nemico 3' });
 const fighters = [player, ally1, ally2, foe1, foe2, foe3];
+let myFighter = player; // di default sono “player”; in multiplayer da ospite divento ally1 (vedi startMultiplayerMatch)
 
 /* ------------------------------------------------------------------ *
  * 5-bis. BARRE HP FLUTTUANTI — un piccolo elemento DOM per ogni
@@ -2286,8 +2287,8 @@ function applyAimDrag(clientX, clientY) {
   const dx = clientX - aimStart.x, dy = clientY - aimStart.y;
   const len = Math.hypot(dx, dy);
   if (len < AIM_DEADZONE) return;
-  if (player.state === 'cast' && player.currentAbility && player.currentAbility.id === aimingAction) {
-    player.facing = Math.atan2(dx/len, dy/len);
+  if (myFighter.state === 'cast' && myFighter.currentAbility && myFighter.currentAbility.id === aimingAction) {
+    myFighter.facing = Math.atan2(dx/len, dy/len);
   }
 }
 window.addEventListener('touchmove', e => {
@@ -2561,12 +2562,12 @@ function triggerHitStop(duration) {
  * 7. SISTEMA DI COMBATTIMENTO — condiviso da giocatore e IA
  * ------------------------------------------------------------------ */
 function requestAction(action) {
-  if (!player.alive) return;
+  if (!myFighter.alive) return;
   if (action === 'parry') {
     if (!playerEquipment.hasShield) return;
-    return tryParry(player);
+    return tryParry(myFighter);
   }
-  if (action === 'dodge') return tryDodge(player);
+  if (action === 'dodge') return tryDodge(myFighter);
 }
 
 /* Avvio/fine della pressione prolungata per le abilità con telegraph.
@@ -2574,16 +2575,16 @@ function requestAction(action) {
    al verde; se il tasto viene rilasciato PRIMA che il cast sia completo,
    l'abilità viene annullata senza effetto. */
 function beginAbilityHold(action) {
-  if (!player.alive) return;
-  const kit = player.kit[action];
+  if (!myFighter.alive) return;
+  const kit = myFighter.kit[action];
   if (!kit) return;
-  if (tryStartAbility(player, kit)) player.heldAbility = action;
+  if (tryStartAbility(myFighter, kit)) myFighter.heldAbility = action;
 }
 function endAbilityHold(action) {
-  if (player.heldAbility !== action) return;
-  player.heldAbility = null;
-  if (player.state === 'cast' && player.currentAbility && player.currentAbility.id === action) {
-    cancelCast(player); // rilasciato troppo presto: interruzione volontaria
+  if (myFighter.heldAbility !== action) return;
+  myFighter.heldAbility = null;
+  if (myFighter.state === 'cast' && myFighter.currentAbility && myFighter.currentAbility.id === action) {
+    cancelCast(myFighter); // rilasciato troppo presto: interruzione volontaria
   }
 }
 function cancelCast(f) {
@@ -2737,6 +2738,12 @@ function updateBleed(f, dt) {
 }
 
 function dealDamage(f, dmg) {
+  if (f.isNetworked) {
+    f.flashTimer = CONFIG.hitFlashTime;
+    spawnHitParticles(f.x, 1.25, f.z, f.team === 'blue' ? 0xbfe0ff : 0xffc9b0, Math.min(16, 6 + Math.round(dmg*0.35)));
+    sfxHit(dmg);
+    return;
+  }
   if (f.buff && f.buff.damageReductionPct) dmg *= (1 - f.buff.damageReductionPct);
   f.hp = Math.max(0, f.hp - dmg);
   f.noHitTimer = 0; // modalità allenamento: il fantoccio smette di rigenerarsi finché viene colpito
@@ -3760,8 +3767,8 @@ function updateCamera(dt) {
   // personaggio del giocatore con un leggero anticipo nella direzione
   // in cui si muove, per dare respiro visivo davanti a lui.
   const mv = currentPlayerMoveVec();
-  const leadX = player.x + mv.x * CONFIG.camera.lookAhead;
-  const leadZ = player.z + mv.z * CONFIG.camera.lookAhead;
+  const leadX = myFighter.x + mv.x * CONFIG.camera.lookAhead;
+  const leadZ = myFighter.z + mv.z * CONFIG.camera.lookAhead;
 
   const desired = new THREE.Vector3(leadX, CONFIG.camera.height, leadZ + CONFIG.camera.back);
   camera.position.lerp(desired, 1 - Math.pow(0.0006, dt));
@@ -3876,7 +3883,7 @@ const SLOT_SHORT_LABELS = {
    loadout attualmente equipaggiato dal giocatore — va richiamata ogni
    volta che l'arma viene cambiata nella schermata pre-partita. */
 function refreshAbilityUI() {
-  const kit = player.kit;
+  const kit = myFighter.kit;
   cdMax = {
     slot1: kit.slot1.cooldown, slot2: kit.slot2.cooldown, slot3: kit.slot3.cooldown,
     parry: SHARED_KIT.parry.cooldown, dodge: SHARED_KIT.dodge.cooldown,
@@ -3893,7 +3900,7 @@ function updateCooldownButtons() {
     const btnEl = document.getElementById(cdMap[key]);
     const veil = btnEl.querySelector('.cd-veil');
     const num = btnEl.querySelector('.cd-num');
-    const remaining = player.cd[key];
+    const remaining = myFighter.cd[key];
     const frac = Math.min(1, remaining / cdMax[key]);
     veil.style.transform = `scaleY(${frac})`;
     num.textContent = remaining > 0.05 ? remaining.toFixed(1) : '';
@@ -3909,9 +3916,9 @@ function showOverlay(playerWon) {
   document.getElementById('stat-mvp-label').textContent = 'MVP squadra';
   document.getElementById('btn-restart').style.display = '';
 
-  document.getElementById('stat-damage-dealt').textContent = Math.round(player.stats.damageDealt);
-  document.getElementById('stat-damage-taken').textContent = Math.round(player.stats.damageTaken);
-  document.getElementById('stat-parries').textContent = player.stats.parries;
+  document.getElementById('stat-damage-dealt').textContent = Math.round(myFighter.stats.damageDealt);
+  document.getElementById('stat-damage-taken').textContent = Math.round(myFighter.stats.damageTaken);
+  document.getElementById('stat-parries').textContent = myFighter.stats.parries;
 
   // MVP: chi ha inflitto più danno nella tua squadra (te incluso)
   const team = fighters.filter(f => f.team === player.team && !f.isKing);
@@ -4165,6 +4172,12 @@ function openLobby(roomId, code, asHost) {
 function connectLobbyPresence() {
   if (lobbyChannel) supabaseClient.removeChannel(lobbyChannel);
   lobbyChannel = supabaseClient.channel('room:' + currentRoomId, { config: { presence: { key: myPlayerId } } });
+  lobbyChannel.on('broadcast', { event: 'start_match' }, () => {
+    if (!isRoomHost) startMultiplayerMatch(false);
+  });
+  lobbyChannel.on('broadcast', { event: 'fstate' }, (msg) => {
+    applyNetworkSnapshot(msg.payload);
+  });
   lobbyChannel.on('presence', { event: 'sync' }, () => {
     const state = lobbyChannel.presenceState();
     const names = Object.values(state).map(arr => arr[0].username);
@@ -4186,10 +4199,75 @@ document.getElementById('lobby-close').addEventListener('click', () => {
 });
 
 document.getElementById('lobby-start-btn').addEventListener('click', () => {
-  // la sincronizzazione vera della partita arriverà in una fase successiva:
-  // per ora la sala d'attesa mostra solo chi è collegato in tempo reale
-  showStatus('La partita sincronizzata arriva nella prossima fase');
+  if (!isRoomHost) return;
+  lobbyChannel.send({ type:'broadcast', event:'start_match', payload:{} });
+  startMultiplayerMatch(true);
 });
+
+/* Avvia una partita Duello 3v3 sincronizzata con l'amico in sala: chi ha
+   invitato controlla "player", l'ospite controlla "ally1" — per questo
+   scambiamo anche il flag isPlayer tra i due quando sono io l'ospite, così
+   tutto il codice di movimento/input esistente (che legge f.isPlayer) segue
+   automaticamente il personaggio giusto. L'altro umano diventa "in rete":
+   niente più IA né fisica locale su di lui, la sua posizione/stato arrivano
+   dai pacchetti broadcast del suo dispositivo (vedi applyNetworkSnapshot).
+   I bot nemici restano locali e indipendenti su ciascun client. */
+function startMultiplayerMatch(amHost) {
+  document.getElementById('lobby-overlay').style.display = 'none';
+  myFighter = amHost ? player : ally1;
+  const networked = amHost ? ally1 : player;
+  networked.isNetworked = true;
+  if (!amHost) { ally1.isPlayer = true; player.isPlayer = false; }
+  applyPlayerLoadout();
+  hideDungeonExtras();
+  document.getElementById('training-badge').style.display = 'none';
+  document.getElementById('btn-exit-training').style.display = 'none';
+  trainingMode = false;
+  matchStarted = true;
+  setupScreen.style.display = 'none';
+  overlay.style.display = 'none';
+  resetMatch();
+  startNetworkSync();
+}
+
+let networkSyncInterval = null;
+function startNetworkSync() {
+  if (networkSyncInterval) clearInterval(networkSyncInterval);
+  networkSyncInterval = setInterval(() => {
+    if (!matchStarted || !lobbyChannel) return;
+    lobbyChannel.send({ type:'broadcast', event:'fstate', payload:{
+      x: myFighter.x, z: myFighter.z, facing: myFighter.facing,
+      hp: myFighter.hp, maxHp: myFighter.maxHp, alive: myFighter.alive, state: myFighter.state,
+    }});
+  }, 120);
+}
+function stopNetworkSync() {
+  if (networkSyncInterval) { clearInterval(networkSyncInterval); networkSyncInterval = null; }
+  player.isNetworked = false;
+  ally1.isNetworked = false;
+  player.isPlayer = true;
+  ally1.isPlayer = false;
+  myFighter = player;
+}
+
+/* Riceve lo snapshot dell'amico e lo applica al combattente "in rete" sul
+   proprio schermo — lo HP/stato "vero" vive solo sul dispositivo di chi lo
+   controlla davvero: qui lo ricopiamo soltanto, non lo ricalcoliamo. */
+function applyNetworkSnapshot(snap) {
+  const target = isRoomHost ? ally1 : player;
+  if (!target.isNetworked) return;
+  target.x = snap.x; target.z = snap.z; target.facing = snap.facing;
+  target.maxHp = snap.maxHp;
+  if (target.alive && !snap.alive) {
+    target.alive = false; target.state = 'dead';
+    onFighterDeath(target);
+  } else {
+    target.alive = snap.alive;
+    if (snap.alive) target.state = snap.state;
+  }
+  target.hp = snap.hp;
+  updateHpBars();
+}
 
 async function checkRoomInvites() {
   const el = document.getElementById('match-invites-list');
@@ -4427,18 +4505,18 @@ function applyPlayerLoadout() {
   const loadout = LOADOUTS[selectedLoadoutId];
   playerEquipment.hasShield = loadout.hasShield;
 
-  player.loadoutId = selectedLoadoutId;
-  player.characterId = selectedCharacterId;
-  player.kit = loadout.kit;
-  player.hasShield = loadout.hasShield;
-  player.buff = BUFFS[selectedBuffId] || null;
+  myFighter.loadoutId = selectedLoadoutId;
+  myFighter.characterId = selectedCharacterId;
+  myFighter.kit = loadout.kit;
+  myFighter.hasShield = loadout.hasShield;
+  myFighter.buff = BUFFS[selectedBuffId] || null;
 
   // ricostruisce il modello 3D con l'arma/scudo/classe corretti
-  scene.remove(player.visual.group);
-  const newVisual = buildCharacterMesh({ tabardColor: player.visual.baseColor, hasShield: loadout.hasShield, weaponVisual: loadout.weaponVisual, isPlayer: true, characterId: loadout.characterId });
-  newVisual.group.position.set(player.x, 0, player.z);
+  scene.remove(myFighter.visual.group);
+  const newVisual = buildCharacterMesh({ tabardColor: myFighter.visual.baseColor, hasShield: loadout.hasShield, weaponVisual: loadout.weaponVisual, isPlayer: true, characterId: loadout.characterId });
+  newVisual.group.position.set(myFighter.x, 0, myFighter.z);
   scene.add(newVisual.group);
-  player.visual = newVisual;
+  myFighter.visual = newVisual;
 
   refreshAbilityUI();
 }
@@ -4495,6 +4573,7 @@ document.getElementById('btn-exit-dungeon').addEventListener('click', () => {
 document.getElementById('btn-change-loadout').addEventListener('click', () => {
   matchStarted = false;
   hideDungeonExtras();
+  stopNetworkSync();
   overlay.style.display = 'none';
   buildSetupCards();
   setupScreen.style.display = 'flex';
@@ -4519,9 +4598,9 @@ function frame(now) {
   }
 
   if (matchStarted && overlay.style.display !== 'flex') {
-    for (const f of fighters) if (!f.isPlayer) updateBotAI(f, dt);
-    for (const f of fighters) moveFighter(f, dt);
-    for (const f of fighters) updateFighterStateMachine(f, dt);
+    for (const f of fighters) if (!f.isPlayer && !f.isNetworked) updateBotAI(f, dt);
+    for (const f of fighters) if (!f.isNetworked) moveFighter(f, dt);
+    for (const f of fighters) if (!f.isNetworked) updateFighterStateMachine(f, dt);
 
     updateProjectiles(dt);
     for (const f of fighters) updateCastIndicator(f);
