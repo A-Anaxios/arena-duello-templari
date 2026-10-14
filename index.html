@@ -2565,9 +2565,15 @@ function requestAction(action) {
   if (!myFighter.alive) return;
   if (action === 'parry') {
     if (!playerEquipment.hasShield) return;
-    return tryParry(myFighter);
+    const ok = tryParry(myFighter);
+    if (ok) broadcastAction('parry');
+    return ok;
   }
-  if (action === 'dodge') return tryDodge(myFighter);
+  if (action === 'dodge') {
+    const ok = tryDodge(myFighter);
+    if (ok) broadcastAction('dodge');
+    return ok;
+  }
 }
 
 /* Avvio/fine della pressione prolungata per le abilità con telegraph.
@@ -2578,7 +2584,10 @@ function beginAbilityHold(action) {
   if (!myFighter.alive) return;
   const kit = myFighter.kit[action];
   if (!kit) return;
-  if (tryStartAbility(myFighter, kit)) myFighter.heldAbility = action;
+  if (tryStartAbility(myFighter, kit)) {
+    myFighter.heldAbility = action;
+    broadcastAction(action);
+  }
 }
 function endAbilityHold(action) {
   if (myFighter.heldAbility !== action) return;
@@ -3074,7 +3083,7 @@ function updateFighterStateMachine(f, dt) {
 }
 
 function executeAbility(f, kit) {
-  if (f.isPlayer) sfxAbilityFire(kit.type); // feedback sonoro solo per le tue abilità, per non creare confusione
+  if (f.isPlayer || f.isNetworked) sfxAbilityFire(kit.type); // feedback sonoro solo per le tue abilità, per non creare confusione
   if (kit.type === 'melee') {
     meleeHitCheck(f, kit);
   } else if (kit.type === 'spin') {
@@ -4178,6 +4187,9 @@ function connectLobbyPresence() {
   lobbyChannel.on('broadcast', { event: 'fstate' }, (msg) => {
     applyNetworkSnapshot(msg.payload);
   });
+  lobbyChannel.on('broadcast', { event: 'action' }, (msg) => {
+    applyNetworkAction(msg.payload);
+  });
   lobbyChannel.on('presence', { event: 'sync' }, () => {
     const state = lobbyChannel.presenceState();
     const names = Object.values(state).map(arr => arr[0].username);
@@ -4267,6 +4279,29 @@ function applyNetworkSnapshot(snap) {
   }
   target.hp = snap.hp;
   updateHpBars();
+}
+
+/* Trasmette un'azione istantanea (parata/schivata) o l'avvio di un'abilità
+   (slot1/2/3) appena riuscita localmente — l'altro dispositivo la rieseguirà
+   con le stesse funzioni di gioco, così vedrà anche proiettili e indicatori
+   di mira, non solo la posizione. */
+function broadcastAction(kind) {
+  if (!lobbyChannel || !matchStarted) return;
+  lobbyChannel.send({ type:'broadcast', event:'action', payload:{ kind, facing: myFighter.facing } });
+}
+
+function applyNetworkAction(payload) {
+  const target = isRoomHost ? ally1 : player;
+  if (!target.isNetworked || !target.alive) return;
+  if (payload.kind === 'parry') {
+    tryParry(target);
+  } else if (payload.kind === 'dodge') {
+    target.moveDir = { x: Math.sin(payload.facing), z: Math.cos(payload.facing) };
+    tryDodge(target);
+  } else {
+    const kit = target.kit[payload.kind];
+    if (kit && tryStartAbility(target, kit)) target.facing = payload.facing;
+  }
 }
 
 async function checkRoomInvites() {
@@ -4599,8 +4634,8 @@ function frame(now) {
 
   if (matchStarted && overlay.style.display !== 'flex') {
     for (const f of fighters) if (!f.isPlayer && !f.isNetworked) updateBotAI(f, dt);
-    for (const f of fighters) if (!f.isNetworked) moveFighter(f, dt);
-    for (const f of fighters) if (!f.isNetworked) updateFighterStateMachine(f, dt);
+    for (const f of fighters) moveFighter(f, dt);
+    for (const f of fighters) updateFighterStateMachine(f, dt);
 
     updateProjectiles(dt);
     for (const f of fighters) updateCastIndicator(f);
