@@ -4268,7 +4268,10 @@ function stopNetworkSync() {
 function applyNetworkSnapshot(snap) {
   const target = isRoomHost ? ally1 : player;
   if (!target.isNetworked) return;
-  target.x = snap.x; target.z = snap.z; target.facing = snap.facing;
+  // niente più scatto diretto: salviamo solo l'obiettivo, ci avviciniamo
+  // gradualmente ogni frame in updateNetworkInterpolation (movimento fluido
+  // tra un pacchetto e l'altro invece del salto discreto ogni ~120ms)
+  target.netTargetX = snap.x; target.netTargetZ = snap.z; target.netTargetFacing = snap.facing;
   target.maxHp = snap.maxHp;
   if (target.alive && !snap.alive) {
     target.alive = false; target.state = 'dead';
@@ -4279,6 +4282,24 @@ function applyNetworkSnapshot(snap) {
   }
   target.hp = snap.hp;
   updateHpBars();
+}
+
+/* Avvicina gradualmente il combattente in rete all'ultima posizione/direzione
+   ricevuta, invece di farlo scattare di colpo ogni volta che arriva un nuovo
+   pacchetto (~120ms) — durante una carica o una schivata saltiamo la
+   levigatura: in quei momenti è già la fisica locale (moveFighter) a
+   muoverlo correttamente, e tirarlo verso un obiettivo che non si è ancora
+   aggiornato lo frenerebbe a metà corsa. */
+function updateNetworkInterpolation(dt) {
+  for (const f of fighters) {
+    if (!f.isNetworked || f.netTargetX === undefined) continue;
+    const isCharging = f.state === 'active' && f.currentAbility && f.currentAbility.type === 'charge';
+    if (f.state === 'dodge' || isCharging) continue;
+    const t = 1 - Math.pow(0.0005, dt);
+    f.x = THREE.MathUtils.lerp(f.x, f.netTargetX, t);
+    f.z = THREE.MathUtils.lerp(f.z, f.netTargetZ, t);
+    f.facing = lerpAngle(f.facing, f.netTargetFacing, t);
+  }
 }
 
 /* Trasmette un'azione istantanea (parata/schivata) o l'avvio di un'abilità
@@ -4635,6 +4656,7 @@ function frame(now) {
   if (matchStarted && overlay.style.display !== 'flex') {
     for (const f of fighters) if (!f.isPlayer && !f.isNetworked) updateBotAI(f, dt);
     for (const f of fighters) moveFighter(f, dt);
+    updateNetworkInterpolation(dt);
     for (const f of fighters) updateFighterStateMachine(f, dt);
 
     updateProjectiles(dt);
