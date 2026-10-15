@@ -2747,12 +2747,7 @@ function updateBleed(f, dt) {
 }
 
 function dealDamage(f, dmg) {
-  if (f.isNetworked) {
-    f.flashTimer = CONFIG.hitFlashTime;
-    spawnHitParticles(f.x, 1.25, f.z, f.team === 'blue' ? 0xbfe0ff : 0xffc9b0, Math.min(16, 6 + Math.round(dmg*0.35)));
-    sfxHit(dmg);
-    return;
-  }
+  if (f.isNetworked) return; // il colpo potrebbe non essere mai andato a segno davvero: il feedback vero parte solo quando il pacchetto di rete lo conferma (vedi applyNetworkSnapshot)
   if (f.buff && f.buff.damageReductionPct) dmg *= (1 - f.buff.damageReductionPct);
   f.hp = Math.max(0, f.hp - dmg);
   f.noHitTimer = 0; // modalità allenamento: il fantoccio smette di rigenerarsi finché viene colpito
@@ -4273,6 +4268,15 @@ function applyNetworkSnapshot(snap) {
   // tra un pacchetto e l'altro invece del salto discreto ogni ~120ms)
   target.netTargetX = snap.x; target.netTargetZ = snap.z; target.netTargetFacing = snap.facing;
   target.maxHp = snap.maxHp;
+  // feedback del colpo confermato — lo mostriamo solo qui, quando l'amico ci
+  // conferma che l'HP è davvero scesa, così non lampeggia mai per un colpo
+  // locale che in realtà potrebbe non essere mai andato a segno
+  if (snap.hp < target.hp) {
+    const dmg = target.hp - snap.hp;
+    target.flashTimer = CONFIG.hitFlashTime;
+    spawnHitParticles(target.x, 1.25, target.z, target.team === 'blue' ? 0xbfe0ff : 0xffc9b0, Math.min(16, 6 + Math.round(dmg*0.35)));
+    sfxHit(dmg);
+  }
   if (target.alive && !snap.alive) {
     target.alive = false; target.state = 'dead';
     onFighterDeath(target);
